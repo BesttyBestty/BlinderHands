@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>盲手</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #111; color: #fff;
+               font-family: -apple-system, "PingFang SC", sans-serif; }
+  main { display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 16px; }
+  #talk { flex: 1; width: 100%; border: none; border-radius: 28px; background: #ffd60a; color: #111;
+          font-size: 40px; font-weight: 700; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #talk.listening { background: #34c759; }
+  #talk.busy { background: #636366; color: #fff; }
+  #status { min-height: 96px; font-size: 24px; line-height: 1.4; text-align: center; padding: 0 8px; }
+  #confirm { display: none; gap: 16px; }
+  #confirm button { flex: 1; height: 96px; border: none; border-radius: 20px; font-size: 32px; font-weight: 700; }
+  #yes { background: #34c759; color: #fff; }
+  #no { background: #ff453a; color: #fff; }
+  #stop { height: 88px; border: none; border-radius: 20px; background: #ff453a; color: #fff;
+          font-size: 34px; font-weight: 800; }
+  #release { display: none; height: 120px; border: none; border-radius: 20px; background: #0a84ff;
+             color: #fff; font-size: 34px; font-weight: 700; }
+</style>
+</head>
+<body>
+<main>
+  <button id="stop" aria-label="急停，让机械臂马上停下">停</button>
+  <div id="status" role="status" aria-live="assertive">按住黄色区域说话</div>
+  <button id="talk" aria-label="按住说话，松开结束">按住说话</button>
+  <button id="release" aria-label="我拿到了，松开夹爪">我拿到了</button>
+  <div id="confirm" role="group" aria-label="确认">
+    <button id="yes">是的</button>
+    <button id="no">不是</button>
+  </div>
+</main>
+<script>
+const talk = document.getElementById('talk');
+const statusEl = document.getElementById('status');
+const confirmEl = document.getElementById('confirm');
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+let pending = null;      // 等待确认的意图 {target, task, question, handover}
+let busy = false;
+let heard = '';
+let offerGuide = null;   // 找到东西后，等待“要不要引导”的回答
+let guiding = null;      // 正在引导的目标
+let waitingRelease = false;
+let reminder = '';       // 药箱提醒，第一次说话时一起播报
+const releaseBtn = document.getElementById('release');
+
+function say(text, onEnd) {
+  statusEl.textContent = text;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'zh-CN';
+  u.rate = 1.05;
+  if (onEnd) u.onend = onEnd;
+  speechSynthesis.speak(u);
+}
+
+function buzz(pattern) { if (navigator.vibrate) navigator.vibrate(pattern); }
+
+function beep(freq) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    osc.frequency.value = freq;
+    osc.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.12);
+  } catch (e) {}
+}
+
+function showConfirm(show) { confirmEl.style.display = show ? 'flex' : 'none'; }
+
+const YES = /^(是|是的|对|对的|嗯|好|好的|没错|可以|行|要)/;
+const NO = /^(不是|不对|不|错了|算了|取消|不用)/;
+const STOP = /^(停|停下|停止|别动|暂停)/;
+
+function post(url, body) {
+  return fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                     body: JSON.stringify(body || {})}).then(r => r.json()).catch(() => null);
+}
+
+async function emergencyStop() {
+  guiding = null;
+  buzz([300, 100, 300]);
+  const r = await post('/api/stop');
+  say(r ? r.say : '已经停下了');
+}
+
+async function releaseObject() {
+  waitingRelease = false;
+  releaseBtn.style.display = 'none';
+  const r = await post('/api/release');
+  say(r ? r.say : '好的');
+}
+
+async function guideLoop() {
+  if (!guiding) return;
+  const r = await post('/api/guide', {target: guiding});
+  if (!r || !guiding) return;
+  say(r.say, () => {
+    if (r.done) { guiding = null; buzz([100, 60, 100, 60, 100]); return; }
+    setTimeout(guideLoop, 600);
+  });
+}
+
+async function handleSpeech(text) {
+  text = text.trim();
+  if (!text) { say('没有听到，请再按住说一遍'); return; }
+  if (STOP.test(text)) { emergencyStop(); return; }
+  if (/^继续/.test(text)) { const r = await post('/api/resume'); say(r ? r.say : '好的'); return; }
+  if (waitingRelease && /(拿到|接住|拿稳|松手|好了)/.test(text)) { releaseObject(); return; }
+  if (offerGuide) {
+    const target = offerGuide;
+    offerGuide = null;
+    if (YES.test(text) || /引导|带/.test(text)) { guiding = target; say('好的，请把手伸到桌面上方', guideLoop); return; }
+    if (NO.test(text)) { say('好的'); return; }
+  }
+
+  if (pending) {
+    if (NO.test(text)) { pending = null; showConfirm(false); say('好的，请再说一遍您要找什么'); return; }
+    if (YES.test(text)) { confirmTask(); return; }
+  }
+
+  statusEl.textContent = '你说：' + text;
+  const r = await fetch('/api/understand', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text})
+  }).then(r => r.json()).catch(() => null);
+  if (!r) { say('网络好像断了，请再试一次'); return; }
+  if (!r.understood) { say(r.confirm); return; }
+  pending = {target: r.target, task: r.task, question: r.question, handover: r.handover};
+  if (!r.needs_confirm) { confirmTask(); return; }
+  showConfirm(true);
+  buzz(80);
+  say((reminder ? reminder + '另外，' : '') + r.confirm);
+  reminder = '';
+}
+
+async function confirmTask() {
+  if (!pending || busy) return;
+  const intent = pending;
+  pendingTask = intent;
+  pending = null;
+  showConfirm(false);
+  const r = await fetch('/api/tasks', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(intent)
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { say(data.error || '暂时没法开始，请再试一次'); return; }
+  setBusy(true);
+  say('好的，我这就去看');
+  poll(data.id, 0);
+}
+
+async function poll(id, spoken) {
+  const r = await fetch('/api/tasks/' + id).then(r => r.json()).catch(() => null);
+  if (!r) { setTimeout(() => poll(id, spoken), 1000); return; }
+  // 进度只说最新的一条，避免排队念一长串
+  if (r.progress.length > spoken && r.status === 'running') {
+    const latest = r.progress[r.progress.length - 1];
+    if (!speechSynthesis.speaking) say(latest);
+    spoken = r.progress.length;
+  }
+  if (r.status === 'waiting_release' && !waitingRelease) {
+    waitingRelease = true;
+    releaseBtn.style.display = 'block';
+    buzz([80, 80, 80]);
+    say('放在您手边了。拿稳以后，按住说“拿到了”，或者点“我拿到了”。');
+  }
+  if (r.status === 'running' || r.status === 'waiting_release') { setTimeout(() => poll(id, spoken), 700); return; }
+  waitingRelease = false;
+  releaseBtn.style.display = 'none';
+  setBusy(false);
+  buzz(r.success ? [100, 80, 100] : [400]);
+  if (r.success && pendingTask && pendingTask.task === 'find') {
+    offerGuide = pendingTask.target;
+    say(r.message + '要我带您的手过去吗？');
+  } else {
+    say(r.message);
+  }
+}
+let pendingTask = null;
+
+function setBusy(b) {
+  busy = b;
+  talk.classList.toggle('busy', b);
+  talk.textContent = b ? '正在看…' : '按住说话';
+}
+
+let recognition = null;
+if (!SR) {
+  statusEl.textContent = '这个浏览器不支持语音识别，请用 Chrome 或 Safari 打开';
+} else {
+  recognition = new SR();
+  recognition.lang = 'zh-CN';
+  recognition.interimResults = false;
+  recognition.continuous = true;
+  recognition.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) heard += e.results[i][0].transcript;
+    }
+  };
+  recognition.onend = () => { talk.classList.remove('listening'); handleSpeech(heard); };
+  recognition.onerror = (e) => {
+    if (e.error === 'not-allowed') say('请允许这个网页使用麦克风');
+  };
+}
+
+function startListening(e) {
+  e.preventDefault();
+  guiding = null;
+  if (!recognition) return;
+  if (busy && !waitingRelease) { say('我还在忙。要停下，请点最上面的红色按钮'); return; }
+  speechSynthesis.cancel();
+  heard = '';
+  beep(880); buzz(40);
+  talk.classList.add('listening');
+  statusEl.textContent = '正在听…';
+  try { recognition.start(); } catch (err) {}
+}
+
+function stopListening(e) {
+  e.preventDefault();
+  if (!recognition || !talk.classList.contains('listening')) return;
+  beep(660);
+  recognition.stop();
+}
+
+talk.addEventListener('pointerdown', startListening);
+talk.addEventListener('pointerup', stopListening);
+talk.addEventListener('pointercancel', stopListening);
+talk.addEventListener('pointerleave', stopListening);
+document.getElementById('yes').addEventListener('click', confirmTask);
+document.getElementById('stop').addEventListener('click', emergencyStop);
+releaseBtn.addEventListener('click', releaseObject);
+fetch('/api/inventory').then(r => r.json()).then(d => {
+  if (d.remind) { reminder = d.summary; statusEl.textContent = d.summary + ' 按住黄色区域说话。'; }
+}).catch(() => {});
+document.getElementById('no').addEventListener('click', () => {
+  pending = null; showConfirm(false); say('好的，请再说一遍您要找什么');
+});
+</script>
+</body>
+</html>

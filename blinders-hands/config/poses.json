@@ -1,0 +1,17 @@
+{
+  "_说明": "观察姿态库。calibrated=false 的姿态只在模拟模式下使用，真机会自动跳过。用 tools/calibrate.py 标定后写成 calibrated=true。sweep：每个姿态沿第 joint 个关节（从 0 数）展开 offsets 里的偏移，供视角规划选择。",
+  "refine": {
+    "roll_joint": 6,
+    "roll_sign": 1.0,
+    "yaw_joint": 4,
+    "yaw_gain": 0.35,
+    "pitch_joint": 5,
+    "pitch_gain": 0.35,
+    "max_step": 0.35
+  },
+  "sweep": {"joint": 4, "offsets": [-1.6, -0.8, 0.8, 1.6]},
+  "views": [
+    {"name": "示例-正面", "joints": [-0.371598, 1.11352, 0.084282, -0.6, -1.354375, 0.003176, 1.164623], "calibrated": false},
+    {"name": "示例-瓶底", "joints": [-0.371598, 1.11352, 0.084282, -0.6, -1.354375, 0.9, 0.0], "calibrated": false}
+  ]
+}

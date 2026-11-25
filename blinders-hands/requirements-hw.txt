@@ -1,0 +1,6 @@
+-r requirements.txt
+# 松灵 NERO 官方 SDK（CAN 总线）
+pyAgxArm @ git+https://github.com/agilexrobotics/pyAgxArm.git
+python-can>=3.3.4
+# Intel RealSense 深度相机
+pyrealsense2

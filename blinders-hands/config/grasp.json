@@ -1,0 +1,15 @@
+{
+  "_说明": "视觉抓取参数，单位米/弧度。workspace 为基座坐标系下允许到达的 x/y/z 范围；inspect_pose 为抓起后的检查位姿，handover_pose 为递给使用者的位姿。上真机前按实际桌面和夹爪核对。",
+  "gripper_max_width": 0.07,
+  "approach_height": 0.10,
+  "grasp_depth": 0.025,
+  "lift_height": 0.15,
+  "grip_force": 1.5,
+  "tool_length": 0.12,
+  "down_roll": 3.141593,
+  "down_pitch": 0.0,
+  "yaw_offset": 0.0,
+  "workspace": [[0.15, 0.65], [-0.45, 0.45], [0.0, 0.6]],
+  "inspect_pose": [0.35, 0.0, 0.35, 3.141593, 0.0, 0.0],
+  "handover_pose": [0.30, -0.25, 0.25, 3.141593, 0.0, 0.0]
+}
